@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: btn-echo-svc
+  namespace: default
+  annotations:
+    cloud.google.com/neg: '{"exposed_ports": {"80":{"name": "btn-echo-neg"}}}'
+  labels:
+    app: btn-echo-app
+spec:
+  type: ClusterIP
+  selector:
+    app: btn-echo-app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080

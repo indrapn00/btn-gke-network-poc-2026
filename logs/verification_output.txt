@@ -1,0 +1,279 @@
+==============================================================================
+BTN GKE Island-Mode Network PoC — End-to-End Live Verification Suite
+Timestamp: 2026-10-26T04:22:02Z
+Project:   gcp-demo-02-307713 | Region: asia-southeast2 | Zone: asia-southeast2-a
+==============================================================================
+
+=== [Test 1/5] Verifying GCP VPC Subnets & GKE Cluster IP Ranges (Island-Mode) ===
+ipCidrRange: 10.2.2.0/24
+name: btn-gke-subnet
+secondaryIpRanges:
+- ipCidrRange: 10.2.16.0/23
+  rangeName: gke-pods
+- ipCidrRange: 10.2.18.0/23
+  rangeName: gke-services
+currentNodeCount: 2
+ipAllocationPolicy:
+  clusterIpv4CidrBlock: 10.2.16.0/23
+  servicesIpv4CidrBlock: 10.2.18.0/23
+name: btn-gke-island-cluster
+network: btn-gcp-vpc
+status: RUNNING
+subnetwork: btn-gke-subnet
+NAME                                                  STATUS   ROLES    AGE   VERSION               INTERNAL-IP   EXTERNAL-IP    OS-IMAGE                             KERNEL-VERSION      CONTAINER-RUNTIME
+gke-btn-gke-island-clust-default-pool-b5908531-5nb4   Ready    <none>   26m   v1.36.4-gke.1495002   10.2.2.4      34.128.71.11   Container-Optimized OS from Google   6.12.105+ (amd64)   containerd://2.2.7
+gke-btn-gke-island-clust-default-pool-b5908531-q8wd   Ready    <none>   26m   v1.36.4-gke.1495002   10.2.2.3      34.101.36.19   Container-Optimized OS from Google   6.12.105+ (amd64)   containerd://2.2.7
+NAME                           READY   STATUS    RESTARTS   AGE   IP           NODE                                                  NOMINATED NODE   READINESS GATES
+btn-echo-app-cb955885b-86ftl   1/1     Running   0          25m   10.2.17.12   gke-btn-gke-island-clust-default-pool-b5908531-5nb4   <none>           <none>
+btn-echo-app-cb955885b-mrp75   1/1     Running   0          25m   10.2.16.8    gke-btn-gke-island-clust-default-pool-b5908531-q8wd   <none>           <none>
+
+=== [Test 2/5] Verifying HA VPN Tunnels & Strict /32 BGP Route Advertisements ===
+NAME                      STATUS       VPN_GATEWAY         PEER_GCP_GATEWAY
+btn-gcp-to-alicloud-tun0  ESTABLISHED  btn-gcp-havpn       sim-alicloud-havpn
+btn-gcp-to-alicloud-tun1  ESTABLISHED  btn-gcp-havpn       sim-alicloud-havpn
+sim-alicloud-to-gcp-tun0  ESTABLISHED  sim-alicloud-havpn  btn-gcp-havpn
+sim-alicloud-to-gcp-tun1  ESTABLISHED  sim-alicloud-havpn  btn-gcp-havpn
+--- BGP Advertised Routes on btn-gcp-router (GCP -> Simulated Alibaba Cloud) ---
+result:
+  bestRoutesForRouter:
+  - destRange: 192.168.1.0/24
+  - destRange: 192.168.1.0/24
+  bgpPeerStatus:
+  - advertisedRoutes:
+    - destRange: 10.2.2.200/32
+    - destRange: 10.2.99.99/32
+    name: bgp-to-alicloud-0
+    status: UP
+  - advertisedRoutes:
+    - destRange: 10.2.2.200/32
+    - destRange: 10.2.99.99/32
+    name: bgp-to-alicloud-1
+    status: UP
+--- BGP Learned Routes on sim-alicloud-router (Simulated Alibaba Cloud Routing Table) ---
+result:
+  bestRoutesForRouter:
+  - destRange: 10.2.2.200/32
+  - destRange: 10.2.99.99/32
+  - destRange: 10.2.99.99/32
+  - destRange: 10.2.2.200/32
+  bgpPeerStatus:
+  - advertisedRoutes:
+    - destRange: 192.168.1.0/24
+    name: bgp-to-gcp-0
+    status: UP
+  - advertisedRoutes:
+    - destRange: 192.168.1.0/24
+    name: bgp-to-gcp-1
+    status: UP
+
+=== [Test 3/5] Verifying Outbound Egress (GKE Pods 10.2.16.0/23 -> AliCloud VM 192.168.1.10 via Private NAT) ===
+--- Cloud Router Private NAT Port Mappings ---
+---
+instanceName: gke-btn-gke-island-clust-default-pool-b5908531-5nb4
+interfaceNatMappings:
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:1024-1039
+    - 10.2.99.99:1024-1039
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: ''
+  sourceVirtualIp: 10.2.2.4
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:1024-1039
+    - 10.2.99.99:1024-1039
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: 10.2.17.0/24
+  sourceVirtualIp: ''
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:32768-32783
+    - 10.2.99.99:32768-32783
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: ''
+  sourceVirtualIp: 10.2.2.4
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:32768-32783
+    - 10.2.99.99:32768-32783
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: 10.2.17.0/24
+  sourceVirtualIp: ''
+---
+instanceName: gke-btn-gke-island-clust-default-pool-b5908531-q8wd
+interfaceNatMappings:
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:1040-1055
+    - 10.2.99.99:1040-1055
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: ''
+  sourceVirtualIp: 10.2.2.3
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:1040-1055
+    - 10.2.99.99:1040-1055
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: 10.2.16.0/24
+  sourceVirtualIp: ''
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:32784-32799
+    - 10.2.99.99:32784-32799
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: ''
+  sourceVirtualIp: 10.2.2.3
+- numTotalDrainNatPorts: 0
+  numTotalNatPorts: 0
+  ruleMappings:
+  - natIpPortRanges:
+    - 10.2.99.98:32784-32799
+    - 10.2.99.99:32784-32799
+    numTotalDrainNatPorts: 0
+    numTotalNatPorts: 32
+    ruleNumber: 100
+  sourceAliasIpRange: 10.2.16.0/24
+  sourceVirtualIp: ''
+--- Outbound HTTP Request from GKE Pod btn-echo-app-cb955885b-86ftl (Pod IP: 10.2.17.12, Node IP: 10.2.2.4) -> http://192.168.1.10/ ---
+{
+  "service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)",
+  "timestamp": "2026-10-26T04:22:17.875086+00:00",
+  "observed_client_ip": "10.2.99.99",
+  "observed_client_port": 1024,
+  "server_hostname": "sim-alicloud-vm",
+  "server_ip": "192.168.1.10",
+  "server_port": 80,
+  "request_path": "/",
+  "headers": {
+    "Accept-Encoding": "identity",
+    "Host": "192.168.1.10",
+    "User-Agent": "Python-urllib/3.11",
+    "Connection": "close"
+  }
+}
+
+--- Outbound HTTP Request from GKE Pod btn-echo-app-cb955885b-mrp75 (Pod IP: 10.2.16.8, Node IP: 10.2.2.3) -> http://192.168.1.10/ ---
+{
+  "service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)",
+  "timestamp": "2026-10-26T04:22:19.538139+00:00",
+  "observed_client_ip": "10.2.99.99",
+  "observed_client_port": 1040,
+  "server_hostname": "sim-alicloud-vm",
+  "server_ip": "192.168.1.10",
+  "server_port": 80,
+  "request_path": "/",
+  "headers": {
+    "Accept-Encoding": "identity",
+    "Host": "192.168.1.10",
+    "User-Agent": "Python-urllib/3.11",
+    "Connection": "close"
+  }
+}
+
+
+=== [Test 4/5] Verifying Inbound Ingress (AliCloud VM 192.168.1.10 -> GKE ILB VIP 10.2.2.200/32) ===
+--- Backend Health of btn-gke-ilb-bs (Standalone NEG btn-echo-neg) ---
+---
+backend: https://www.googleapis.com/compute/v1/projects/gcp-demo-02-307713/zones/asia-southeast2-a/networkEndpointGroups/btn-echo-neg
+status:
+  healthStatus:
+  - healthState: HEALTHY
+    instance: https://www.googleapis.com/compute/v1/projects/gcp-demo-02-307713/zones/asia-southeast2-a/instances/gke-btn-gke-island-clust-default-pool-b5908531-q8wd
+    ipAddress: 10.2.16.8
+    port: 8080
+  - healthState: HEALTHY
+    instance: https://www.googleapis.com/compute/v1/projects/gcp-demo-02-307713/zones/asia-southeast2-a/instances/gke-btn-gke-island-clust-default-pool-b5908531-5nb4
+    ipAddress: 10.2.17.12
+    port: 8080
+  kind: compute#backendServiceGroupHealth
+--- Executing 2 HTTP Requests from sim-alicloud-vm (192.168.1.10) to http://10.2.2.200/ ---
+WARNING: 
+
+To increase the performance of the tunnel, consider installing NumPy. For instructions,
+please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
+
+{
+  "service": "BTN GKE Island-Mode HTTP Workload",
+  "direction": "AliCloud-to-GKE-ILB-Ingress",
+  "observed_client_ip": "10.2.20.4",
+  "request_path": "/",
+  "gke_pod_name": "btn-echo-app-cb955885b-86ftl",
+  "gke_pod_namespace": "default",
+  "gke_pod_ip": "10.2.17.12",
+  "gke_node_name": "gke-btn-gke-island-clust-default-pool-b5908531-5nb4",
+  "gke_node_ip": "10.2.2.4",
+  "hostname": "btn-echo-app-cb955885b-86ftl",
+  "headers": {
+    "host": "10.2.2.200",
+    "user-agent": "curl/7.88.1",
+    "accept": "*/*",
+    "x-forwarded-proto": "http",
+    "via": "1.1 google",
+    "x-forwarded-for": "192.168.1.10,10.2.2.200"
+  }
+}
+--- SECOND REQUEST ---
+{
+  "service": "BTN GKE Island-Mode HTTP Workload",
+  "direction": "AliCloud-to-GKE-ILB-Ingress",
+  "observed_client_ip": "10.2.20.4",
+  "request_path": "/",
+  "gke_pod_name": "btn-echo-app-cb955885b-mrp75",
+  "gke_pod_namespace": "default",
+  "gke_pod_ip": "10.2.16.8",
+  "gke_node_name": "gke-btn-gke-island-clust-default-pool-b5908531-q8wd",
+  "gke_node_ip": "10.2.2.3",
+  "hostname": "btn-echo-app-cb955885b-mrp75",
+  "headers": {
+    "host": "10.2.2.200",
+    "user-agent": "curl/7.88.1",
+    "accept": "*/*",
+    "x-forwarded-proto": "http",
+    "via": "1.1 google",
+    "x-forwarded-for": "192.168.1.10,10.2.2.200"
+  }
+}
+
+=== [Test 5/5] Verifying Island-Mode Isolation (Negative Tests from AliCloud VM to Pod/Node IPs) ===
+WARNING: 
+
+To increase the performance of the tunnel, consider installing NumPy. For instructions,
+please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
+
+1. Testing direct HTTP to GKE Pod IP (10.2.17.12:8080) [Expect Timeout]:
+PASS: Direct Pod IP 10.2.17.12 is unroutable from Alibaba Cloud (Island-Mode Enforced)
+2. Testing direct HTTP to GKE Node IP (10.2.2.4:80) [Expect Timeout]:
+PASS: Direct Node IP 10.2.2.4 is unroutable from Alibaba Cloud (Island-Mode Enforced)
+
+==============================================================================
+ALL 5 VERIFICATION TESTS PASSED SUCCESSFULLY!
+Saved log to: /usr/local/google/home/indrapn/my_agy/btn-gke-network-poc-2026/logs/verification_output.txt
+==============================================================================
