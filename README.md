@@ -109,47 +109,153 @@ btn-gke-network-poc-2026/
 
 ---
 
-## 5. Quick Reproduction & Live Verification
+## 5. Step-by-Step Control Plane & Data Plane Verification Guide (GUI + CLI)
 
-### 5.1 Run the Verification Suite Against the Live Environment
-All resources are deployed and running in project `gcp-demo-02-307713` (`asia-southeast2`). To run the full verification suite:
+### 5.1 Automated End-to-End Verification Script
+All resources are deployed and running in project `gcp-demo-02-307713` (`asia-southeast2`). To run the full 5-test verification suite (including live `tcpdump` packet captures, `/var/log/alicloud-http.log`, and `kubectl logs`):
 ```bash
 git clone https://github.com/indrapn00/btn-gke-network-poc-2026.git
 cd btn-gke-network-poc-2026
 ./scripts/02-verify-all.sh
 ```
 
-### 5.2 Summary of Live Verification Results ([`logs/verification_output.txt`](./logs/verification_output.txt))
+---
 
-1. **BGP Route Table on Simulated Alibaba Cloud (`sim-alicloud-router`, `ASN 65002`):**
-   ```yaml
-   bestRoutesForRouter:
-   - destRange: 10.2.2.200/32   # 1 /32 Inbound GKE Internal Load Balancer VIP
-   - destRange: 10.2.99.99/32   # 1 /32 Outbound GKE Private NAT SNAT IP
-   ```
-   *(Zero `/24` or `/23` GKE Node/Pod/Service ranges are present in Alibaba Cloud's routing table.)*
+### 5.2 Test 1 (Control Plane): Verify Strict `/32` BGP Route Advertisements
+- **In Google Cloud Console UI:**
+  1. Go to **Network Connectivity $\rightarrow$ Cloud Routers $\rightarrow$ `sim-alicloud-router`**.
+  2. Click on the **BGP sessions** (`bgp-to-gcp-0` / `bgp-to-gcp-1`) or open **VPC network $\rightarrow$ VPC networks $\rightarrow$ `sim-alicloud-vpc` $\rightarrow$ Routes** (`Dynamic (BGP)` routes).
+  3. Confirm that **only** `10.2.2.200/32` (Inbound ILB VIP) and `10.2.99.99/32` (Outbound Private NAT SNAT IP) are learned from `ASN 65001`—and that `10.2.2.0/24` (Nodes), `10.2.16.0/23` (Pods), and `10.2.18.0/23` (Services) are completely absent.
+- **Via CLI:**
+  ```bash
+  gcloud compute routers get-status sim-alicloud-router \
+    --project=gcp-demo-02-307713 --region=asia-southeast2 \
+    --format="yaml(result.bestRoutesForRouter[].destRange,result.bestRoutesForRouter[].nextHopIp)"
+  ```
+- **Live Output:**
+  ```yaml
+  bestRoutesForRouter:
+  - destRange: 10.2.2.200/32   # 1 /32 Inbound GKE Internal Load Balancer VIP
+  - destRange: 10.2.99.99/32   # 1 /32 Outbound GKE Private NAT SNAT IP
+  ```
 
-2. **Outbound Egress Test (`GKE Pods 10.2.17.12 & 10.2.16.8` $\rightarrow$ `Simulated Alibaba Cloud VM 192.168.1.10`):**
+---
+
+### 5.3 Test 2 (Data Plane — Outbound Egress): GKE Pod (`10.2.16.0/23`) $\rightarrow$ Simulated Alibaba Cloud VM (`192.168.1.10`) via Private NAT (`10.2.99.99/32`)
+
+This test proves in the **Data Plane** (at both the network packet layer via `tcpdump` and the HTTP application layer via `/var/log/alicloud-http.log`) that traffic initiated by GKE Pods (`10.2.17.12` on Node `10.2.2.4` and `10.2.16.8` on Node `10.2.2.3`) is source-NATed by `btn-private-nat-gw` so that the Simulated Alibaba Cloud VM (`192.168.1.10`) **only ever sees the single `/32` SNAT IP `10.2.99.99`**.
+
+#### Step A — Open a Live Listener on `sim-alicloud-vm` (`192.168.1.10`)
+- **In Google Cloud Console UI:** Go to **Compute Engine $\rightarrow$ VM instances**, find **`sim-alicloud-vm`**, and click **SSH** (opens SSH-in-browser via IAP).
+- **Or via CLI:**
+  ```bash
+  gcloud compute ssh sim-alicloud-vm --project=gcp-demo-02-307713 --zone=asia-southeast2-a --tunnel-through-iap
+  ```
+- Inside `sim-alicloud-vm`, run `tcpdump` on interface `ens4` (or `tail -f /var/log/alicloud-http.log`) to watch incoming packets in real time:
+  ```bash
+  sudo tcpdump -ni ens4 'tcp port 80'
+  ```
+
+#### Step B — Initiate Outbound HTTP Traffic from Inside the GKE Pods (`10.2.17.12` & `10.2.16.8`)
+- From Cloud Shell or your workstation terminal (connected to `btn-gke-island-cluster`), execute an outbound HTTP GET request from each GKE Pod to the Simulated Alibaba Cloud VM (`http://192.168.1.10/`):
+  ```bash
+  gcloud container clusters get-credentials btn-gke-island-cluster \
+    --zone=asia-southeast2-a --project=gcp-demo-02-307713
+
+  # 1. Inspect the GKE Pods and their hidden Island-Mode IPs (10.2.17.12 and 10.2.16.8):
+  kubectl get pods -l app=btn-echo-app -o wide
+
+  # 2. Execute HTTP requests from inside each GKE Pod to Simulated Alibaba Cloud VM (192.168.1.10):
+  for POD in $(kubectl get pods -l app=btn-echo-app -o jsonpath='{.items[*].metadata.name}'); do
+    POD_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.podIP}')
+    NODE_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.hostIP}')
+    echo ">>> Sending HTTP GET from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://192.168.1.10/egress-from-$POD"
+    kubectl exec "$POD" -- python3 -c "
+  import urllib.request
+  with urllib.request.urlopen('http://192.168.1.10/egress-from-$POD', timeout=5) as r:
+      print('HTTP Status:', r.status)
+      print(r.read().decode())
+  "
+  done
+  ```
+
+#### Step C — Observed Data Plane Output (HTTP Response, `tcpdump`, & Alibaba Cloud Server Logs)
+1. **HTTP Response Returned to the GKE Pods (`10.2.17.12` on Node `10.2.2.4` and `10.2.16.8` on Node `10.2.2.3`):**
    ```json
+   >>> Sending HTTP GET from GKE Pod btn-echo-app-cb955885b-86ftl (Pod IP: 10.2.17.12, Node IP: 10.2.2.4) -> http://192.168.1.10/egress-from-btn-echo-app-cb955885b-86ftl
+   HTTP Status: 200
    {
      "service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)",
+     "timestamp": "2026-10-26T04:43:30.423855+00:00",
      "observed_client_ip": "10.2.99.99",
      "observed_client_port": 1024,
      "server_hostname": "sim-alicloud-vm",
      "server_ip": "192.168.1.10",
      "server_port": 80,
-     "request_path": "/"
+     "request_path": "/egress-from-btn-echo-app-cb955885b-86ftl"
+   }
+
+   >>> Sending HTTP GET from GKE Pod btn-echo-app-cb955885b-mrp75 (Pod IP: 10.2.16.8, Node IP: 10.2.2.3) -> http://192.168.1.10/egress-from-btn-echo-app-cb955885b-mrp75
+   HTTP Status: 200
+   {
+     "service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)",
+     "timestamp": "2026-10-26T04:43:32.707139+00:00",
+     "observed_client_ip": "10.2.99.99",
+     "observed_client_port": 1040,
+     "server_hostname": "sim-alicloud-vm",
+     "server_ip": "192.168.1.10",
+     "server_port": 80,
+     "request_path": "/egress-from-btn-echo-app-cb955885b-mrp75"
    }
    ```
-   *(Both GKE Pods across both GKE Nodes are translated to the single Private NAT IP `10.2.99.99`.)*
+2. **Packet Capture (`tcpdump` on `sim-alicloud-vm` `ens4`) Showing Only `10.2.99.99` on the Wire:**
+   ```text
+   04:43:30.420173 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [S], seq 1118586314, win 42600, length 0
+   04:43:30.420232 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [S.], seq 1776674852, ack 1118586315, length 0
+   04:43:30.422787 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [P.], seq 1:157, ack 1, length 156: HTTP: GET /egress-from-btn-echo-app-cb955885b-86ftl HTTP/1.1
+   04:43:30.424344 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [P.], seq 1:125, ack 157, length 124: HTTP: HTTP/1.0 200 OK
+   04:43:32.704304 IP 10.2.99.99.1040 > 192.168.1.10.80: Flags [S], seq 805427931, win 42600, length 0
+   04:43:32.704356 IP 192.168.1.10.80 > 10.2.99.99.1040: Flags [S.], seq 3359210763, ack 805427932, length 0
+   ```
+   *(Notice how Pod 1 on Node 1 uses source port `10.2.99.99:1024` and Pod 2 on Node 2 uses source port `10.2.99.99:1040`—both sharing the exact same single `/32` IP `10.2.99.99`!)*
 
-3. **Inbound Ingress Test (`Simulated Alibaba Cloud VM 192.168.1.10` $\rightarrow$ `GKE ILB VIP 10.2.2.200/32`):**
+---
+
+### 5.4 Test 3 (Data Plane — Inbound Ingress): Simulated Alibaba Cloud VM (`192.168.1.10`) $\rightarrow$ GKE Service ILB VIP (`10.2.2.200/32`)
+
+This test proves in the **Data Plane** that the Simulated Alibaba Cloud VM (`192.168.1.10`) can initiate HTTP requests to the GKE service using **only the single `/32` Internal Load Balancer VIP `10.2.2.200`**, and that requests are load-balanced across the GKE Pods (`10.2.16.8` and `10.2.17.12`).
+
+#### Step A — Watch Live GKE Pod Logs
+- **In Google Cloud Console UI:** Go to **Kubernetes Engine $\rightarrow$ Workloads $\rightarrow$ `btn-echo-app` $\rightarrow$ Logs** tab.
+- **Or via CLI:**
+  ```bash
+  kubectl logs -l app=btn-echo-app -f --prefix=true
+  ```
+
+#### Step B — Send Inbound HTTP Requests from `sim-alicloud-vm` (`192.168.1.10`) to `http://10.2.2.200/`
+- Inside the SSH session on **`sim-alicloud-vm`** (or via `gcloud compute ssh`), run:
+  ```bash
+  gcloud compute ssh sim-alicloud-vm \
+    --project=gcp-demo-02-307713 --zone=asia-southeast2-a --tunnel-through-iap \
+    --command="
+  curl -i -s http://10.2.2.200/ingress-from-alicloud-1
+  echo ''
+  curl -i -s http://10.2.2.200/ingress-from-alicloud-2
+  "
+  ```
+
+#### Step C — Observed Data Plane Output (HTTP Response, `tcpdump`, & GKE Pod Logs)
+1. **HTTP Responses Received on `sim-alicloud-vm` (`192.168.1.10`) from Both GKE Pods (`10.2.16.8` & `10.2.17.12`):**
    ```json
+   HTTP/1.1 200 OK
+   server: BaseHTTP/0.6 Python/3.11.17
+   via: 1.1 google
+
    {
      "service": "BTN GKE Island-Mode HTTP Workload",
      "direction": "AliCloud-to-GKE-ILB-Ingress",
-     "observed_client_ip": "10.2.20.3",
-     "request_path": "/",
+     "observed_client_ip": "10.2.20.2",
+     "request_path": "/ingress-from-alicloud-1",
      "gke_pod_name": "btn-echo-app-cb955885b-mrp75",
      "gke_pod_ip": "10.2.16.8",
      "gke_node_ip": "10.2.2.3",
@@ -158,15 +264,64 @@ cd btn-gke-network-poc-2026
        "x-forwarded-for": "192.168.1.10,10.2.2.200"
      }
    }
+
+   HTTP/1.1 200 OK
+   server: BaseHTTP/0.6 Python/3.11.17
+   via: 1.1 google
+
+   {
+     "service": "BTN GKE Island-Mode HTTP Workload",
+     "direction": "AliCloud-to-GKE-ILB-Ingress",
+     "observed_client_ip": "10.2.20.2",
+     "request_path": "/ingress-from-alicloud-2",
+     "gke_pod_name": "btn-echo-app-cb955885b-86ftl",
+     "gke_pod_ip": "10.2.17.12",
+     "gke_node_ip": "10.2.2.4",
+     "headers": {
+       "host": "10.2.2.200",
+       "x-forwarded-for": "192.168.1.10,10.2.2.200"
+     }
+   }
+   ```
+2. **Packet Capture (`tcpdump` on `sim-alicloud-vm` `ens4`) Showing `192.168.1.10` Communicating Exclusively with Single VIP `10.2.2.200:80`:**
+   ```text
+   04:49:06.002789 IP 192.168.1.10.55180 > 10.2.2.200.80: Flags [S], seq 1034096099, win 65320, length 0
+   04:49:06.005886 IP 10.2.2.200.80 > 192.168.1.10.55180: Flags [S.], seq 1639618629, ack 1034096100, length 0
+   04:49:06.006089 IP 192.168.1.10.55180 > 10.2.2.200.80: Flags [P.], seq 1:95, ack 1, length 94: HTTP: GET /ingress-packet-check HTTP/1.1
+   04:49:06.009511 IP 10.2.2.200.80 > 192.168.1.10.55180: Flags [P.], seq 1:171, ack 95, length 170: HTTP: HTTP/1.1 200 OK
+   ```
+3. **Live GKE Pod Container Logs (`kubectl logs -l app=btn-echo-app --prefix=true`):**
+   ```text
+   [pod/btn-echo-app-cb955885b-mrp75/echo-server] 10.2.20.2 - - [26/Oct/2026 04:43:43] "GET /ingress-from-alicloud-1 HTTP/1.1" 200 -
+   [pod/btn-echo-app-cb955885b-86ftl/echo-server] 10.2.20.2 - - [26/Oct/2026 04:43:43] "GET /ingress-from-alicloud-2 HTTP/1.1" 200 -
    ```
 
-4. **Negative Isolation Test (`Simulated Alibaba Cloud VM 192.168.1.10` $\rightarrow$ Direct GKE Pod `10.2.16.8:8080` & Node `10.2.2.3:80`):**
-   ```text
-   1. Testing direct HTTP to GKE Pod IP (10.2.16.8:8080) [Expect Timeout]:
-   PASS: Direct Pod IP 10.2.16.8 is unroutable from Alibaba Cloud (Island-Mode Enforced)
-   2. Testing direct HTTP to GKE Node IP (10.2.2.3:80) [Expect Timeout]:
-   PASS: Direct Node IP 10.2.2.3 is unroutable from Alibaba Cloud (Island-Mode Enforced)
-   ```
+---
+
+### 5.5 Test 4 (Data Plane — Negative Isolation Test): Verify GKE Pod & Node Ranges Are Unreachable from Alibaba Cloud
+
+From inside `sim-alicloud-vm` (`192.168.1.10`), attempt to connect directly to a GKE Pod IP (`10.2.17.12:8080` or `10.2.16.8:8080`) or GKE Node IP (`10.2.2.4:80` or `10.2.2.3:80`) bypassing the `/32` ILB VIP:
+```bash
+gcloud compute ssh sim-alicloud-vm \
+  --project=gcp-demo-02-307713 --zone=asia-southeast2-a --tunnel-through-iap \
+  --command="
+echo '1. Testing direct HTTP to GKE Pod IP (10.2.17.12:8080) [Expect Timeout]:'
+curl -v -m 3 http://10.2.17.12:8080/ || echo 'PASS: Direct Pod IP 10.2.17.12 is unroutable from Alibaba Cloud (Island-Mode Enforced)'
+echo '2. Testing direct HTTP to GKE Node IP (10.2.2.4:80) [Expect Timeout]:'
+curl -v -m 3 http://10.2.2.4:80/ || echo 'PASS: Direct Node IP 10.2.2.4 is unroutable from Alibaba Cloud (Island-Mode Enforced)'
+"
+```
+**Observed Output:**
+```text
+1. Testing direct HTTP to GKE Pod IP (10.2.17.12:8080) [Expect Timeout]:
+* Trying 10.2.17.12:8080...
+* Connection timed out after 3001 milliseconds
+PASS: Direct Pod IP 10.2.17.12 is unroutable from Alibaba Cloud (Island-Mode Enforced)
+2. Testing direct HTTP to GKE Node IP (10.2.2.4:80) [Expect Timeout]:
+* Trying 10.2.2.4:80...
+* Connection timed out after 3001 milliseconds
+PASS: Direct Node IP 10.2.2.4 is unroutable from Alibaba Cloud (Island-Mode Enforced)
+```
 
 ---
 

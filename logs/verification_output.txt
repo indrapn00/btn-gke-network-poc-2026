@@ -1,6 +1,6 @@
 ==============================================================================
 BTN GKE Island-Mode Network PoC — End-to-End Live Verification Suite
-Timestamp: 2026-10-26T04:22:02Z
+Timestamp: 2026-10-26T04:51:34Z
 Project:   gcp-demo-02-307713 | Region: asia-southeast2 | Zone: asia-southeast2-a
 ==============================================================================
 
@@ -21,11 +21,11 @@ network: btn-gcp-vpc
 status: RUNNING
 subnetwork: btn-gke-subnet
 NAME                                                  STATUS   ROLES    AGE   VERSION               INTERNAL-IP   EXTERNAL-IP    OS-IMAGE                             KERNEL-VERSION      CONTAINER-RUNTIME
-gke-btn-gke-island-clust-default-pool-b5908531-5nb4   Ready    <none>   26m   v1.36.4-gke.1495002   10.2.2.4      34.128.71.11   Container-Optimized OS from Google   6.12.105+ (amd64)   containerd://2.2.7
-gke-btn-gke-island-clust-default-pool-b5908531-q8wd   Ready    <none>   26m   v1.36.4-gke.1495002   10.2.2.3      34.101.36.19   Container-Optimized OS from Google   6.12.105+ (amd64)   containerd://2.2.7
+gke-btn-gke-island-clust-default-pool-b5908531-5nb4   Ready    <none>   55m   v1.36.4-gke.1495002   10.2.2.4      34.128.71.11   Container-Optimized OS from Google   6.12.105+ (amd64)   containerd://2.2.7
+gke-btn-gke-island-clust-default-pool-b5908531-q8wd   Ready    <none>   55m   v1.36.4-gke.1495002   10.2.2.3      34.101.36.19   Container-Optimized OS from Google   6.12.105+ (amd64)   containerd://2.2.7
 NAME                           READY   STATUS    RESTARTS   AGE   IP           NODE                                                  NOMINATED NODE   READINESS GATES
-btn-echo-app-cb955885b-86ftl   1/1     Running   0          25m   10.2.17.12   gke-btn-gke-island-clust-default-pool-b5908531-5nb4   <none>           <none>
-btn-echo-app-cb955885b-mrp75   1/1     Running   0          25m   10.2.16.8    gke-btn-gke-island-clust-default-pool-b5908531-q8wd   <none>           <none>
+btn-echo-app-cb955885b-86ftl   1/1     Running   0          54m   10.2.17.12   gke-btn-gke-island-clust-default-pool-b5908531-5nb4   <none>           <none>
+btn-echo-app-cb955885b-mrp75   1/1     Running   0          54m   10.2.16.8    gke-btn-gke-island-clust-default-pool-b5908531-q8wd   <none>           <none>
 
 === [Test 2/5] Verifying HA VPN Tunnels & Strict /32 BGP Route Advertisements ===
 NAME                      STATUS       VPN_GATEWAY         PEER_GCP_GATEWAY
@@ -45,8 +45,8 @@ result:
     name: bgp-to-alicloud-0
     status: UP
   - advertisedRoutes:
-    - destRange: 10.2.2.200/32
     - destRange: 10.2.99.99/32
+    - destRange: 10.2.2.200/32
     name: bgp-to-alicloud-1
     status: UP
 --- BGP Learned Routes on sim-alicloud-router (Simulated Alibaba Cloud Routing Table) ---
@@ -66,7 +66,7 @@ result:
     name: bgp-to-gcp-1
     status: UP
 
-=== [Test 3/5] Verifying Outbound Egress (GKE Pods 10.2.16.0/23 -> AliCloud VM 192.168.1.10 via Private NAT) ===
+=== [Test 3/5] Verifying Outbound Egress Data Plane (GKE Pods 10.2.16.0/23 -> AliCloud VM 192.168.1.10 via Private NAT) ===
 --- Cloud Router Private NAT Port Mappings ---
 ---
 instanceName: gke-btn-gke-island-clust-default-pool-b5908531-5nb4
@@ -162,16 +162,23 @@ interfaceNatMappings:
     ruleNumber: 100
   sourceAliasIpRange: 10.2.16.0/24
   sourceVirtualIp: ''
---- Outbound HTTP Request from GKE Pod btn-echo-app-cb955885b-86ftl (Pod IP: 10.2.17.12, Node IP: 10.2.2.4) -> http://192.168.1.10/ ---
+--- Starting background tcpdump packet capture on sim-alicloud-vm (ens4) for SNAT IP 10.2.99.99 ---
+WARNING: 
+
+To increase the performance of the tunnel, consider installing NumPy. For instructions,
+please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
+
+--- Outbound HTTP Request from GKE Pod btn-echo-app-cb955885b-86ftl (Pod IP: 10.2.17.12, Node IP: 10.2.2.4) -> http://192.168.1.10/egress-from-btn-echo-app-cb955885b-86ftl ---
+HTTP Status: 200
 {
   "service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)",
-  "timestamp": "2026-10-26T04:22:17.875086+00:00",
+  "timestamp": "2026-10-26T04:51:55.401798+00:00",
   "observed_client_ip": "10.2.99.99",
   "observed_client_port": 1024,
   "server_hostname": "sim-alicloud-vm",
   "server_ip": "192.168.1.10",
   "server_port": 80,
-  "request_path": "/",
+  "request_path": "/egress-from-btn-echo-app-cb955885b-86ftl",
   "headers": {
     "Accept-Encoding": "identity",
     "Host": "192.168.1.10",
@@ -180,16 +187,17 @@ interfaceNatMappings:
   }
 }
 
---- Outbound HTTP Request from GKE Pod btn-echo-app-cb955885b-mrp75 (Pod IP: 10.2.16.8, Node IP: 10.2.2.3) -> http://192.168.1.10/ ---
+--- Outbound HTTP Request from GKE Pod btn-echo-app-cb955885b-mrp75 (Pod IP: 10.2.16.8, Node IP: 10.2.2.3) -> http://192.168.1.10/egress-from-btn-echo-app-cb955885b-mrp75 ---
+HTTP Status: 200
 {
   "service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)",
-  "timestamp": "2026-10-26T04:22:19.538139+00:00",
+  "timestamp": "2026-10-26T04:51:57.089387+00:00",
   "observed_client_ip": "10.2.99.99",
   "observed_client_port": 1040,
   "server_hostname": "sim-alicloud-vm",
   "server_ip": "192.168.1.10",
   "server_port": 80,
-  "request_path": "/",
+  "request_path": "/egress-from-btn-echo-app-cb955885b-mrp75",
   "headers": {
     "Accept-Encoding": "identity",
     "Host": "192.168.1.10",
@@ -198,8 +206,38 @@ interfaceNatMappings:
   }
 }
 
+--- Captured Data Plane tcpdump & HTTP Access Log on sim-alicloud-vm (192.168.1.10) ---
+WARNING: 
 
-=== [Test 4/5] Verifying Inbound Ingress (AliCloud VM 192.168.1.10 -> GKE ILB VIP 10.2.2.200/32) ===
+To increase the performance of the tunnel, consider installing NumPy. For instructions,
+please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
+
+[tcpdump on sim-alicloud-vm ens4]:
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on ens4, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+04:51:55.398103 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [S], seq 816008366, win 42600, options [mss 1366,sackOK,TS val 3947665103 ecr 0,nop,wscale 7], length 0
+04:51:55.398140 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [S.], seq 1077020178, ack 816008367, win 64768, options [mss 1420,sackOK,TS val 2287414038 ecr 3947665103,nop,wscale 7], length 0
+04:51:55.400724 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [.], ack 1, win 333, options [nop,nop,TS val 3947665108 ecr 2287414038], length 0
+04:51:55.400780 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [P.], seq 1:157, ack 1, win 333, options [nop,nop,TS val 3947665108 ecr 2287414038], length 156: HTTP: GET /egress-from-btn-echo-app-cb955885b-86ftl HTTP/1.1
+04:51:55.400796 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [.], ack 157, win 505, options [nop,nop,TS val 2287414041 ecr 3947665108], length 0
+04:51:55.402158 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [P.], seq 1:125, ack 157, win 505, options [nop,nop,TS val 2287414042 ecr 3947665108], length 124: HTTP: HTTP/1.0 200 OK
+04:51:55.402825 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [.], ack 125, win 333, options [nop,nop,TS val 3947665110 ecr 2287414042], length 0
+04:51:55.403001 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [P.], seq 125:619, ack 157, win 505, options [nop,nop,TS val 2287414043 ecr 3947665110], length 494: HTTP
+04:51:55.403047 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [F.], seq 619, ack 157, win 505, options [nop,nop,TS val 2287414043 ecr 3947665110], length 0
+04:51:55.403679 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [.], ack 619, win 331, options [nop,nop,TS val 3947665111 ecr 2287414043], length 0
+04:51:55.403967 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [F.], seq 157, ack 620, win 331, options [nop,nop,TS val 3947665111 ecr 2287414043], length 0
+04:51:55.403976 IP 192.168.1.10.80 > 10.2.99.99.1024: Flags [.], ack 158, win 505, options [nop,nop,TS val 2287414044 ecr 3947665111], length 0
+12 packets captured
+12 packets received by filter
+0 packets dropped by kernel
+
+[/var/log/alicloud-http.log on sim-alicloud-vm]:
+{"service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)", "timestamp": "2026-10-26T04:43:30.423855+00:00", "observed_client_ip": "10.2.99.99", "observed_client_port": 1024, "server_hostname": "sim-alicloud-vm", "server_ip": "192.168.1.10", "server_port": 80, "request_path": "/egress-from-btn-echo-app-cb955885b-86ftl", "headers": {"Accept-Encoding": "identity", "Host": "192.168.1.10", "User-Agent": "Python-urllib/3.11", "Connection": "close"}}
+{"service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)", "timestamp": "2026-10-26T04:43:32.707139+00:00", "observed_client_ip": "10.2.99.99", "observed_client_port": 1040, "server_hostname": "sim-alicloud-vm", "server_ip": "192.168.1.10", "server_port": 80, "request_path": "/egress-from-btn-echo-app-cb955885b-mrp75", "headers": {"Accept-Encoding": "identity", "Host": "192.168.1.10", "User-Agent": "Python-urllib/3.11", "Connection": "close"}}
+{"service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)", "timestamp": "2026-10-26T04:51:55.401798+00:00", "observed_client_ip": "10.2.99.99", "observed_client_port": 1024, "server_hostname": "sim-alicloud-vm", "server_ip": "192.168.1.10", "server_port": 80, "request_path": "/egress-from-btn-echo-app-cb955885b-86ftl", "headers": {"Accept-Encoding": "identity", "Host": "192.168.1.10", "User-Agent": "Python-urllib/3.11", "Connection": "close"}}
+{"service": "Simulated Alibaba Cloud Endpoint (BTN Hybrid PoC)", "timestamp": "2026-10-26T04:51:57.089387+00:00", "observed_client_ip": "10.2.99.99", "observed_client_port": 1040, "server_hostname": "sim-alicloud-vm", "server_ip": "192.168.1.10", "server_port": 80, "request_path": "/egress-from-btn-echo-app-cb955885b-mrp75", "headers": {"Accept-Encoding": "identity", "Host": "192.168.1.10", "User-Agent": "Python-urllib/3.11", "Connection": "close"}}
+
+=== [Test 4/5] Verifying Inbound Ingress Data Plane (AliCloud VM 192.168.1.10 -> GKE ILB VIP 10.2.2.200/32) ===
 --- Backend Health of btn-gke-ilb-bs (Standalone NEG btn-echo-neg) ---
 ---
 backend: https://www.googleapis.com/compute/v1/projects/gcp-demo-02-307713/zones/asia-southeast2-a/networkEndpointGroups/btn-echo-neg
@@ -214,17 +252,25 @@ status:
     ipAddress: 10.2.17.12
     port: 8080
   kind: compute#backendServiceGroupHealth
---- Executing 2 HTTP Requests from sim-alicloud-vm (192.168.1.10) to http://10.2.2.200/ ---
+--- Executing 2 HTTP Requests + tcpdump on sim-alicloud-vm (192.168.1.10) -> http://10.2.2.200/ ---
 WARNING: 
 
 To increase the performance of the tunnel, consider installing NumPy. For instructions,
 please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the_tcp_upload_bandwidth
 
+>>> Request 1: curl -i -s http://10.2.2.200/ingress-from-alicloud-1
+HTTP/1.1 200 OK
+server: BaseHTTP/0.6 Python/3.11.17
+date: Mon, 26 Oct 2026 04:52:10 GMT
+content-type: application/json
+via: 1.1 google
+transfer-encoding: chunked
+
 {
   "service": "BTN GKE Island-Mode HTTP Workload",
   "direction": "AliCloud-to-GKE-ILB-Ingress",
-  "observed_client_ip": "10.2.20.4",
-  "request_path": "/",
+  "observed_client_ip": "10.2.20.3",
+  "request_path": "/ingress-from-alicloud-1",
   "gke_pod_name": "btn-echo-app-cb955885b-86ftl",
   "gke_pod_namespace": "default",
   "gke_pod_ip": "10.2.17.12",
@@ -240,12 +286,20 @@ please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the
     "x-forwarded-for": "192.168.1.10,10.2.2.200"
   }
 }
---- SECOND REQUEST ---
+
+>>> Request 2: curl -i -s http://10.2.2.200/ingress-from-alicloud-2
+HTTP/1.1 200 OK
+server: BaseHTTP/0.6 Python/3.11.17
+date: Mon, 26 Oct 2026 04:52:10 GMT
+content-type: application/json
+via: 1.1 google
+transfer-encoding: chunked
+
 {
   "service": "BTN GKE Island-Mode HTTP Workload",
   "direction": "AliCloud-to-GKE-ILB-Ingress",
-  "observed_client_ip": "10.2.20.4",
-  "request_path": "/",
+  "observed_client_ip": "10.2.20.3",
+  "request_path": "/ingress-from-alicloud-2",
   "gke_pod_name": "btn-echo-app-cb955885b-mrp75",
   "gke_pod_namespace": "default",
   "gke_pod_ip": "10.2.16.8",
@@ -261,6 +315,48 @@ please see https://cloud.google.com/iap/docs/using-tcp-forwarding#increasing_the
     "x-forwarded-for": "192.168.1.10,10.2.2.200"
   }
 }
+
+[tcpdump on sim-alicloud-vm ens4 during Ingress to 10.2.2.200:80]:
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on ens4, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+04:52:10.596683 IP 192.168.1.10.51848 > 10.2.2.200.80: Flags [S], seq 2443346423, win 65320, options [mss 1420,sackOK,TS val 841888845 ecr 0,nop,wscale 7], length 0
+04:52:10.600169 IP 10.2.2.200.80 > 192.168.1.10.51848: Flags [S.], seq 89320696, ack 2443346424, win 65535, options [mss 1366,sackOK,TS val 186645088 ecr 841888845,nop,wscale 8], length 0
+04:52:10.600227 IP 192.168.1.10.51848 > 10.2.2.200.80: Flags [.], ack 1, win 511, options [nop,nop,TS val 841888848 ecr 186645088], length 0
+04:52:10.600355 IP 192.168.1.10.51848 > 10.2.2.200.80: Flags [P.], seq 1:98, ack 1, win 511, options [nop,nop,TS val 841888848 ecr 186645088], length 97: HTTP: GET /ingress-from-alicloud-1 HTTP/1.1
+04:52:10.601372 IP 10.2.2.200.80 > 192.168.1.10.51848: Flags [.], ack 98, win 1051, options [nop,nop,TS val 186645090 ecr 841888848], length 0
+04:52:10.606138 IP 10.2.2.200.80 > 192.168.1.10.51848: Flags [P.], seq 1:171, ack 98, win 1051, options [nop,nop,TS val 186645095 ecr 841888848], length 170: HTTP: HTTP/1.1 200 OK
+04:52:10.606173 IP 192.168.1.10.51848 > 10.2.2.200.80: Flags [.], ack 171, win 510, options [nop,nop,TS val 841888854 ecr 186645095], length 0
+04:52:10.606265 IP 10.2.2.200.80 > 192.168.1.10.51848: Flags [P.], seq 171:835, ack 98, win 1051, options [nop,nop,TS val 186645095 ecr 841888848], length 664: HTTP
+04:52:10.606272 IP 192.168.1.10.51848 > 10.2.2.200.80: Flags [.], ack 835, win 505, options [nop,nop,TS val 841888854 ecr 186645095], length 0
+04:52:10.606442 IP 192.168.1.10.51848 > 10.2.2.200.80: Flags [F.], seq 98, ack 835, win 505, options [nop,nop,TS val 841888855 ecr 186645095], length 0
+10 packets captured
+17 packets received by filter
+0 packets dropped by kernel
+--- GKE Pod Logs (kubectl logs -l app=btn-echo-app) confirming receipt of requests from 192.168.1.10 ---
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.26 - - [26/Oct/2026 04:51:57] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.27 - - [26/Oct/2026 04:51:58] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.24 - - [26/Oct/2026 04:52:02] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.26 - - [26/Oct/2026 04:52:02] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.27 - - [26/Oct/2026 04:52:03] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.24 - - [26/Oct/2026 04:52:07] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.26 - - [26/Oct/2026 04:52:07] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.27 - - [26/Oct/2026 04:52:08] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 10.2.20.3 - - [26/Oct/2026 04:52:10] "GET /ingress-from-alicloud-1 HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.24 - - [26/Oct/2026 04:52:12] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.26 - - [26/Oct/2026 04:52:12] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-86ftl/echo-server] 35.191.233.27 - - [26/Oct/2026 04:52:13] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.27 - - [26/Oct/2026 04:51:58] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.29 - - [26/Oct/2026 04:51:58] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.25 - - [26/Oct/2026 04:52:03] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.27 - - [26/Oct/2026 04:52:03] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.29 - - [26/Oct/2026 04:52:03] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.25 - - [26/Oct/2026 04:52:08] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.27 - - [26/Oct/2026 04:52:08] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.29 - - [26/Oct/2026 04:52:08] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 10.2.20.3 - - [26/Oct/2026 04:52:10] "GET /ingress-from-alicloud-2 HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.25 - - [26/Oct/2026 04:52:13] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.27 - - [26/Oct/2026 04:52:13] "GET / HTTP/1.1" 200 -
+[pod/btn-echo-app-cb955885b-mrp75/echo-server] 35.191.233.29 - - [26/Oct/2026 04:52:13] "GET / HTTP/1.1" 200 -
 
 === [Test 5/5] Verifying Island-Mode Isolation (Negative Tests from AliCloud VM to Pod/Node IPs) ===
 WARNING: 

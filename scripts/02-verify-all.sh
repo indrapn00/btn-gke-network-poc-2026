@@ -58,37 +58,69 @@ gcloud compute routers get-status sim-alicloud-router \
   --format="yaml(result.bgpPeerStatus[].name,result.bgpPeerStatus[].status,result.bgpPeerStatus[].advertisedRoutes[].destRange,result.bestRoutesForRouter[].destRange)"
 
 echo ""
-echo "=== [Test 3/5] Verifying Outbound Egress (GKE Pods 10.2.16.0/23 -> AliCloud VM 192.168.1.10 via Private NAT) ==="
+echo "=== [Test 3/5] Verifying Outbound Egress Data Plane (GKE Pods 10.2.16.0/23 -> AliCloud VM 192.168.1.10 via Private NAT) ==="
 echo "--- Cloud Router Private NAT Port Mappings ---"
 gcloud compute routers get-nat-mapping-info btn-gcp-router \
   --project="$PROJECT" \
   --region="$REGION" \
   --nat-name=btn-private-nat-gw
 
+echo "--- Starting background tcpdump packet capture on sim-alicloud-vm (ens4) for SNAT IP 10.2.99.99 ---"
+gcloud compute ssh sim-alicloud-vm \
+  --project="$PROJECT" \
+  --zone="$ZONE" \
+  --tunnel-through-iap \
+  --command="sudo bash -c 'nohup timeout 12 tcpdump -ni ens4 \"host 10.2.99.99 and tcp port 80\" -c 12 > /tmp/egress_tcpdump.txt 2>&1 </dev/null &'"
+sleep 2
+
 for POD in $(kubectl get pods -l app=btn-echo-app -o jsonpath='{.items[*].metadata.name}'); do
   POD_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.podIP}')
   NODE_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.hostIP}')
-  echo "--- Outbound HTTP Request from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://192.168.1.10/ ---"
-  kubectl exec "$POD" -- python3 -c '
+  echo "--- Outbound HTTP Request from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://192.168.1.10/egress-from-$POD ---"
+  kubectl exec "$POD" -- python3 -c "
 import urllib.request
-with urllib.request.urlopen("http://192.168.1.10/", timeout=5) as r:
+with urllib.request.urlopen('http://192.168.1.10/egress-from-$POD', timeout=5) as r:
+    print('HTTP Status:', r.status)
     print(r.read().decode())
-'
+"
 done
 
+sleep 3
+echo "--- Captured Data Plane tcpdump & HTTP Access Log on sim-alicloud-vm (192.168.1.10) ---"
+gcloud compute ssh sim-alicloud-vm \
+  --project="$PROJECT" \
+  --zone="$ZONE" \
+  --tunnel-through-iap \
+  --command="echo '[tcpdump on sim-alicloud-vm ens4]:'; cat /tmp/egress_tcpdump.txt; echo ''; echo '[/var/log/alicloud-http.log on sim-alicloud-vm]:'; sudo tail -n 4 /var/log/alicloud-http.log"
+
 echo ""
-echo "=== [Test 4/5] Verifying Inbound Ingress (AliCloud VM 192.168.1.10 -> GKE ILB VIP 10.2.2.200/32) ==="
+echo "=== [Test 4/5] Verifying Inbound Ingress Data Plane (AliCloud VM 192.168.1.10 -> GKE ILB VIP 10.2.2.200/32) ==="
 echo "--- Backend Health of btn-gke-ilb-bs (Standalone NEG btn-echo-neg) ---"
 gcloud compute backend-services get-health btn-gke-ilb-bs \
   --project="$PROJECT" \
   --region="$REGION"
 
-echo "--- Executing 2 HTTP Requests from sim-alicloud-vm (192.168.1.10) to http://10.2.2.200/ ---"
+echo "--- Executing 2 HTTP Requests + tcpdump on sim-alicloud-vm (192.168.1.10) -> http://10.2.2.200/ ---"
 gcloud compute ssh sim-alicloud-vm \
   --project="$PROJECT" \
   --zone="$ZONE" \
   --tunnel-through-iap \
-  --command="curl -s -m 5 http://10.2.2.200/ && echo '--- SECOND REQUEST ---' && curl -s -m 5 http://10.2.2.200/"
+  --command="
+sudo bash -c 'nohup timeout 8 tcpdump -ni ens4 \"host 10.2.2.200 and tcp port 80\" -c 10 > /tmp/ingress_tcpdump.txt 2>&1 </dev/null &'
+sleep 1
+echo '>>> Request 1: curl -i -s http://10.2.2.200/ingress-from-alicloud-1'
+curl -i -s -m 5 http://10.2.2.200/ingress-from-alicloud-1
+echo ''
+echo '>>> Request 2: curl -i -s http://10.2.2.200/ingress-from-alicloud-2'
+curl -i -s -m 5 http://10.2.2.200/ingress-from-alicloud-2
+sleep 2
+echo ''
+echo '[tcpdump on sim-alicloud-vm ens4 during Ingress to 10.2.2.200:80]:'
+cat /tmp/ingress_tcpdump.txt
+"
+
+echo "--- GKE Pod Logs (kubectl logs -l app=btn-echo-app) confirming receipt of requests from 192.168.1.10 ---"
+kubectl logs -l app=btn-echo-app --tail=12 --prefix=true
 
 echo ""
 echo "=== [Test 5/5] Verifying Island-Mode Isolation (Negative Tests from AliCloud VM to Pod/Node IPs) ==="

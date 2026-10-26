@@ -499,33 +499,80 @@ gcloud compute forwarding-rules create btn-gke-ilb-fr \
     --format="yaml(result.bestRoutesForRouter[].destRange,result.bestRoutesForRouter[].nextHopIp)"
   ```
 
-### 4.2 Verify Outbound Egress (GKE Pods $\rightarrow$ Simulated Alibaba Cloud VM via Private NAT)
-- **In Google Cloud Console GUI:**
-  1. Navigate to **Network Services $\rightarrow$ Cloud NAT $\rightarrow$ `btn-private-nat-gw` $\rightarrow$ Port mapping tab** to see `10.2.99.99` mapped to the GKE nodes and Pod alias ranges (`10.2.16.0/24`, `10.2.17.0/24`).
-- **Via CLI (`kubectl exec`):**
-  ```bash
-  for POD in $(kubectl get pods -l app=btn-echo-app -o jsonpath='{.items[*].metadata.name}'); do
-    kubectl exec "$POD" -- python3 -c '
-  import urllib.request
-  with urllib.request.urlopen("http://192.168.1.10/", timeout=5) as r:
-      print(r.read().decode())
-  '
-  done
-  ```
-  Both Pods (`10.2.17.12` on Node 1 and `10.2.16.8` on Node 2) return `"observed_client_ip": "10.2.99.99"`.
+### 4.2 Verify Outbound Egress Data Plane (GKE Pods `10.2.16.0/23` $\rightarrow$ Simulated Alibaba Cloud VM `192.168.1.10` via Private NAT `10.2.99.99/32`)
 
-### 4.3 Verify Inbound Ingress (`sim-alicloud-vm` `192.168.1.10` $\rightarrow$ GKE ILB VIP `10.2.2.200/32`) & Island-Mode Isolation
-SSH into `sim-alicloud-vm` (via Console **SSH-in-browser** button or `gcloud compute ssh --tunnel-through-iap`) and run:
-```bash
-# 1. Positive Inbound Test to GKE ILB /32 VIP (Succeeds with HTTP 200 OK):
-curl -s http://10.2.2.200/
+1. **In Google Cloud Console GUI (Control Plane + Data Plane SSH):**
+   - **Control Plane Port Mapping:** Navigate to **Network Services $\rightarrow$ Cloud NAT $\rightarrow$ `btn-private-nat-gw` $\rightarrow$ Port mapping tab** to see `10.2.99.99` mapped to the GKE nodes and Pod alias ranges (`10.2.16.0/24`, `10.2.17.0/24`).
+   - **Data Plane Packet & Log Watch on `sim-alicloud-vm`:** Navigate to **Compute Engine $\rightarrow$ VM instances**, click **SSH** next to **`sim-alicloud-vm`** (`192.168.1.10`), and run:
+     ```bash
+     sudo tcpdump -ni ens4 'tcp port 80'
+     # Or watch the HTTP server access log:
+     sudo tail -f /var/log/alicloud-http.log
+     ```
+2. **Initiate Outbound HTTP Requests from the GKE Pods (`kubectl exec`):**
+   ```bash
+   gcloud container clusters get-credentials btn-gke-island-cluster \
+     --zone="asia-southeast2-a" --project="gcp-demo-02-307713"
 
-# 2. Negative Isolation Test directly to GKE Pod IP 10.2.16.8:8080 (Times out as unroutable!):
-curl -v -m 3 http://10.2.16.8:8080/
+   for POD in $(kubectl get pods -l app=btn-echo-app -o jsonpath='{.items[*].metadata.name}'); do
+     POD_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.podIP}')
+     NODE_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.hostIP}')
+     echo ">>> Sending HTTP GET from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://192.168.1.10/egress-from-$POD"
+     kubectl exec "$POD" -- python3 -c "
+   import urllib.request
+   with urllib.request.urlopen('http://192.168.1.10/egress-from-$POD', timeout=5) as r:
+       print('HTTP Status:', r.status)
+       print(r.read().decode())
+   "
+   done
+   ```
+3. **Observed Data Plane Proof (`tcpdump` on `sim-alicloud-vm` + JSON Response):**
+   - Both GKE Pods (`10.2.17.12` on Node `10.2.2.4` and `10.2.16.8` on Node `10.2.2.3`) receive `HTTP 200 OK` with `"observed_client_ip": "10.2.99.99"`.
+   - `tcpdump` on `sim-alicloud-vm` (`ens4`) confirms the raw TCP packets arrive from `10.2.99.99:1024` (Node 1) and `10.2.99.99:1040` (Node 2):
+     ```text
+     04:43:30.420173 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [S], seq 1118586314, win 42600, length 0
+     04:43:30.422787 IP 10.2.99.99.1024 > 192.168.1.10.80: Flags [P.], seq 1:157, ack 1, length 156: HTTP: GET /egress-from-btn-echo-app-cb955885b-86ftl HTTP/1.1
+     04:43:32.704304 IP 10.2.99.99.1040 > 192.168.1.10.80: Flags [S], seq 805427931, win 42600, length 0
+     ```
 
-# 3. Negative Isolation Test directly to GKE Node IP 10.2.2.3:80 (Times out as unroutable!):
-curl -v -m 3 http://10.2.2.3:80/
-```
+### 4.3 Verify Inbound Ingress Data Plane (`sim-alicloud-vm` `192.168.1.10` $\rightarrow$ GKE ILB VIP `10.2.2.200/32`) & Island-Mode Isolation
+
+1. **Watch GKE Pod Logs in Real Time (GUI or CLI):**
+   - **In Google Cloud Console GUI:** Navigate to **Kubernetes Engine $\rightarrow$ Workloads $\rightarrow$ `btn-echo-app` $\rightarrow$ Logs**.
+   - **Via CLI:**
+     ```bash
+     kubectl logs -l app=btn-echo-app -f --prefix=true
+     ```
+2. **Send Inbound HTTP Requests from `sim-alicloud-vm` (`192.168.1.10`) to `10.2.2.200`:**
+   SSH into `sim-alicloud-vm` (via Console **SSH-in-browser** button or `gcloud compute ssh sim-alicloud-vm --zone=asia-southeast2-a --tunnel-through-iap`) and run:
+   ```bash
+   # 1. Positive Inbound Test to GKE ILB /32 VIP (Succeeds with HTTP 200 OK across both GKE Pods):
+   curl -i http://10.2.2.200/ingress-from-alicloud-1
+   curl -i http://10.2.2.200/ingress-from-alicloud-2
+
+   # 2. Optional Packet Capture on sim-alicloud-vm during Inbound Request:
+   sudo tcpdump -ni ens4 'host 10.2.2.200 and tcp port 80'
+
+   # 3. Negative Isolation Test directly to GKE Pod IP 10.2.17.12:8080 (Times out as unroutable!):
+   curl -v -m 3 http://10.2.17.12:8080/
+
+   # 4. Negative Isolation Test directly to GKE Node IP 10.2.2.4:80 (Times out as unroutable!):
+   curl -v -m 3 http://10.2.2.4:80/
+   ```
+3. **Observed Data Plane Proof:**
+   - `curl -i http://10.2.2.200/ingress-from-alicloud-1` and `...-2` return `HTTP/1.1 200 OK` from `btn-echo-app-cb955885b-mrp75` (`10.2.16.8`) and `btn-echo-app-cb955885b-86ftl` (`10.2.17.12`) with `"x-forwarded-for": "192.168.1.10,10.2.2.200"`.
+   - `tcpdump` on `sim-alicloud-vm` confirms the TCP handshake and HTTP payload exchange between `192.168.1.10` and `10.2.2.200:80`:
+     ```text
+     04:49:06.002789 IP 192.168.1.10.55180 > 10.2.2.200.80: Flags [S], seq 1034096099, win 65320, length 0
+     04:49:06.005886 IP 10.2.2.200.80 > 192.168.1.10.55180: Flags [S.], seq 1639618629, ack 1034096100, length 0
+     04:49:06.006089 IP 192.168.1.10.55180 > 10.2.2.200.80: Flags [P.], seq 1:95, ack 1, length 94: HTTP: GET /ingress-packet-check HTTP/1.1
+     04:49:06.009511 IP 10.2.2.200.80 > 192.168.1.10.55180: Flags [P.], seq 1:171, ack 95, length 170: HTTP: HTTP/1.1 200 OK
+     ```
+   - `kubectl logs -l app=btn-echo-app --prefix=true` confirms the GKE Pods logged both incoming requests:
+     ```text
+     [pod/btn-echo-app-cb955885b-mrp75/echo-server] 10.2.20.2 - - [26/Oct/2026 04:43:43] "GET /ingress-from-alicloud-1 HTTP/1.1" 200 -
+     [pod/btn-echo-app-cb955885b-86ftl/echo-server] 10.2.20.2 - - [26/Oct/2026 04:43:43] "GET /ingress-from-alicloud-2 HTTP/1.1" 200 -
+     ```
 
 ---
 
