@@ -74,10 +74,40 @@ flowchart LR
 > [!IMPORTANT]
 > Testing this architecture live in `gcp-demo-02-307713` uncovered **two critical Google Cloud networking behaviors** that every architect designing GKE Island-Mode with Hybrid Private NAT must account for:
 
-### Finding 1: Why GCP `PRIVATE_NAT` Requires a `/29` Subnet (`10.2.99.96/29`) and Allocates `10.2.99.99/32`
-1. **Minimum `/29` Subnet Prefix Length:** In Google Cloud, a Private NAT gateway (`--type=PRIVATE`) cannot use a standalone reserved `/32` IP resource (`--source-nat-active-ips` is only supported for `PUBLIC` NAT). Instead, Private NAT requires a dedicated subnet with `--purpose=PRIVATE_NAT`, and the Compute Engine API enforces a **minimum subnet size of `/29`** (`8` total IPs, `4` usable host IPs). Passing `10.2.99.100/32` directly as a subnet range fails with `Invalid IPCidrRange: 10.2.99.100/32. Prefix length must be at most 29`.
-2. **Enclosing `/29` Block (`10.2.99.96/29`) & `/32` BGP Advertisement:** The `/29` block containing `10.2.99.100` is **`10.2.99.96/29`** (usable host IPs: `10.2.99.98`, `10.2.99.99`, `10.2.99.100`, `10.2.99.101`). When `btn-private-nat-subnet` (`10.2.99.96/29`) is attached to Rule `100` (`--match="nexthop.is_hybrid"`), Cloud NAT automatically allocates from the lowest usable IPs first, selecting **`10.2.99.99`** (`10.2.99.99:1024-1039` on Node 1 and `10.2.99.99:1040-1055` on Node 2) for all GKE Pod egress.
-3. **Advertising Strictly `1 /32` over BGP:** Even though the `PRIVATE_NAT` subnet in GCP is a `/29` (`10.2.99.96/29`), **Cloud Router Custom BGP Advertisement does NOT require advertising the `/29`!** We configure `btn-gcp-router` to advertise **only the single `/32` host route (`10.2.99.99/32`)** (plus `10.2.2.200/32` for inbound ILB), satisfying BTN's requirement that Alibaba Cloud only receives `1 /32` route for outbound traffic and `1 /32` route for inbound traffic. *(Recommendation for BTN: Coordinate with BTN so the `/32` allowlisted on Alibaba Cloud matches the active IP `.98`/`.99` in the assigned `/29` `PRIVATE_NAT` block, or allow the 4 host `/32`s of `10.2.99.96/29`).*
+### Finding 1: Why GCP `PRIVATE_NAT` Requires a `/29` Subnet (`10.2.99.96/29`), `/29` IP Math (`8` Total vs. `4` Usable IPs), & How SNAT Selects `10.2.99.99/32`
+
+1. **Minimum `/29` Subnet Prefix Length (`8` Total IPs = `4` GCP-Reserved + `4` Usable Host IPs):**
+   - In Google Cloud, a Private NAT gateway (`--type=PRIVATE`) cannot use a standalone reserved `/32` IP resource (`--source-nat-active-ips` is only supported for `PUBLIC` NAT), and GCP blocks manual static IP reservations inside a `PRIVATE_NAT` subnet (`PRIVATE_NAT subnetwork cannot be used for address reservation`).
+   - Instead, Private NAT requires a dedicated subnet with `--purpose=PRIVATE_NAT`, and the Compute Engine API enforces a **minimum subnet size of `/29`**. Passing `10.2.99.100/32` directly fails with `Invalid IPCidrRange: 10.2.99.100/32. Prefix length must be at most 29`.
+   - **Why does `10.2.99.96/29` have `8` total IPs (`10.2.99.96`–`10.2.99.103`), of which `4` are usable by Private NAT?**
+     In standard CIDR math, a `/29` block has $2^{(32-29)} = 2^3 = \mathbf{8\text{ total IP addresses}}$ (`10.2.99.96` through `10.2.99.103`). Unlike traditional on-premises networks (which reserve only 2 IPs per subnet: network and broadcast), **every Google Cloud VPC primary subnet reserves 4 IP addresses**, leaving **4 usable host IPs** for Private NAT:
+
+     | IP Address in `10.2.99.96/29` | Status in Google Cloud VPC (`PRIVATE_NAT`) | Can Private NAT Emit Packets from This IP? |
+     | :--- | :--- | :--- |
+     | **`10.2.99.96`** | **Reserved by GCP** — Subnet Network Address (1st IP) | ❌ **Never** |
+     | **`10.2.99.97`** | **Reserved by GCP** — Default Subnet Gateway (2nd IP) | ❌ **Never** |
+     | **`10.2.99.98`** | ✅ **Usable Private NAT IP #1** | ✅ **Yes** (Allocated as secondary/spillover range) |
+     | **`10.2.99.99`** | ✅ **Usable Private NAT IP #2** *(Primary Active IP in PoC)* | ✅ **Yes** (Used first by greedy sequential allocation) |
+     | **`10.2.99.100`** | ✅ **Usable Private NAT IP #3** | ✅ **Yes** (Available in `/29` pool as nodes/ports scale) |
+     | **`10.2.99.101`** | ✅ **Usable Private NAT IP #4** | ✅ **Yes** (Available in `/29` pool as nodes/ports scale) |
+     | **`10.2.99.102`** | **Reserved by GCP** — Second-to-last IP (Reserved for future use) | ❌ **Never** |
+     | **`10.2.99.103`** | **Reserved by GCP** — Subnet Broadcast Address (Last IP) | ❌ **Never** |
+
+2. **How Private NAT Selects `10.2.99.99` First (Greedy Sequential Allocation) & When Spillover Can Happen:**
+   - When `btn-private-nat-subnet` (`10.2.99.96/29`) is attached to Rule `100` (`--match="nexthop.is_hybrid"`), Cloud NAT assigns port blocks from the `/29` pool to each GKE Node (for example, `10.2.99.99:1024-1039`, `10.2.99.99:32768-32783`, and `10.2.99.98:1024-1039` on Node 1).
+   - **Greedy Sequential Selection:** For any destination `(dst_ip, dst_port, protocol)` tuple (e.g., `192.168.1.10:80/TCP`), Google Cloud's Andromeda NAT port allocator does **not** pick randomly across the `/29`. Instead, it allocates ports **greedily and sequentially** starting from the first active IP range (**`10.2.99.99`**). That is why all normal connections from Node 1 (`10.2.99.99:1024..`) and Node 2 (`10.2.99.99:1040..`) deterministically use **`10.2.99.99`**.
+   - **Spillover Nuance Under High Concurrency:** If a single GKE Node opens more simultaneous connections (including connections in the 30s `TIME_WAIT` window) to the **exact same `(dst_ip, dst_port, protocol)` endpoint** than the ports currently allocated on `10.2.99.99` before Dynamic Port Allocation steps up, Cloud NAT will spill the next connection over to **`10.2.99.98`**. If BGP only advertises `10.2.99.99/32`, return packets for any spillover connection on `10.2.99.98` will be dropped by Alibaba Cloud.
+
+3. **BTN Firewall & BGP Negotiation Playbook (Option A vs. Option B):**
+   - **Option A (Recommended Cloud-Native Pattern — Negotiate `/29` or `4 x /32` Usable IPs with BTN):**
+     - Explain to BTN that `/29` (`10.2.99.96/29` = `8` total IPs, `4` usable NAT IPs) is Google Cloud's minimum subnet size for serverless Private NAT (`--type=PRIVATE`).
+     - In BTN's firewall and BGP route filter, BTN can either:
+       1. Allow the **`/29` block (`10.2.99.96/29`)** or all **`8 x /32` IPs (`10.2.99.96/32`–`10.2.99.103/32`)**, **OR**
+       2. If BTN registers individual `/32` host objects in their firewall and wants the fewest possible entries, register only the **`4 x /32` usable host IPs (`10.2.99.98/32`, `10.2.99.99/32`, `10.2.99.100/32`, `10.2.99.101/32`)**, because GCP will never emit traffic from `.96`, `.97`, `.102`, or `.103`.
+     - We also recommend setting `--min-ports-per-vm=2048` and `--tcp-time-wait-timeout=30s` on `btn-private-nat-gw` so each GKE node pre-allocates a large port buffer.
+   - **Option B (Fallback if BTN Strictly Refuses Anything Beyond `1 x /32` IP `10.2.99.100/32`):**
+     - In this PoC, we demonstrate that Cloud Router Custom BGP Advertisement can advertise **strictly `1 /32` (`10.2.99.99/32`)** while keeping `10.2.99.96/29` hidden.
+     - However, if BTN's security policy permanently forbids allowing the 4 usable `/32` IPs of `10.2.99.96/29` and requires a **100% mathematical guarantee** that not a single spillover packet ever uses `.98`/`.99`/`.101` under extreme burst load, replace `PRIVATE_NAT` with a lightweight Egress NAT VM / NVA (`10.2.99.100/32`) using Linux kernel `iptables -t nat -A POSTROUTING -d 192.168.1.0/24 -j SNAT --to-source 10.2.99.100`.
 
 ### Finding 2: Why Inbound GKE Ingress Must Use a Proxy-Based Internal Load Balancer (`INTERNAL_MANAGED`) Instead of a Passthrough ILB (`INTERNAL`)
 1. **Private NAT Applies to `ALL_IP_RANGES` of the GKE Subnet:** When configuring Private NAT (`--type=PRIVATE`), GCP enforces `Only ALL_IP_RANGES is allowed value for sourceIpRangesToNat for private Nats`. Enabling Private NAT on `btn-gcp-vpc` therefore attaches Andromeda's VM Private NAT pipeline (`ENDPOINT_TYPE_VM`) to both the GKE Pod secondary range (`10.2.16.0/23`) **and** the GKE Node primary range (`10.2.2.0/24`).
@@ -157,7 +187,10 @@ This test proves in the **Data Plane** (at both the network packet layer via `tc
   ```
 
 #### Step B — Initiate Outbound HTTP Traffic from Inside the GKE Pods (`10.2.17.12` & `10.2.16.8`)
-- From Cloud Shell or your workstation terminal (connected to `btn-gke-island-cluster`), execute an outbound HTTP GET request from each GKE Pod to the Simulated Alibaba Cloud VM (`http://192.168.1.10/`):
+> [!WARNING]
+> **Cloud Shell `kubeconfig` Tip:** If you run `kubectl` in Google Cloud Shell and see `Unable to connect to the server: dial tcp <old-ip>:443: i/o timeout`, your Cloud Shell `~/.kube/config` is still pointing to an older, deleted GKE cluster! Always run `gcloud container clusters get-credentials btn-gke-island-cluster --zone=asia-southeast2-a --project=gcp-demo-02-307713` first to point `kubectl` to `btn-gke-island-cluster` (`34.101.129.243`).
+
+- From Cloud Shell or your workstation terminal, execute an outbound HTTP GET request from each GKE Pod to the Simulated Alibaba Cloud VM (`http://192.168.1.10/`):
   ```bash
   gcloud container clusters get-credentials btn-gke-island-cluster \
     --zone=asia-southeast2-a --project=gcp-demo-02-307713
