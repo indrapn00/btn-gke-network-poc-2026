@@ -157,38 +157,38 @@ Below is the complete step-by-step guide to build this environment from scratch.
 5. **Dynamic routing mode:** **Regional** $\rightarrow$ Click **Create**.
 
 <details>
-<summary><b>💻 Equivalent <code>gcloud</code> CLI Commands for Step 1</b></summary>
+<summary><b>💻 Equivalent <code>gcloud</code> CLI Commands for Step 1 (Portable Across Any GCP Project)</b></summary>
 
 ```bash
-PROJECT="gcp-demo-02-307713"
-REGION="asia-southeast2"
+# Dynamically auto-detects PROJECT_ID, REGION, and ZONE from `gcloud config` (or `.env`):
+source ./scripts/00-env.sh
 
-gcloud compute networks create btn-gcp-vpc \
-  --project="$PROJECT" --subnet-mode=custom --bgp-routing-mode=regional
+gcloud compute networks create "$GCP_VPC" \
+  --project="$PROJECT_ID" --subnet-mode=custom --bgp-routing-mode=regional
 
-gcloud compute networks subnets create btn-gke-subnet \
-  --project="$PROJECT" --network=btn-gcp-vpc --region="$REGION" \
-  --range=10.2.2.0/24 \
-  --secondary-range=gke-pods=10.2.16.0/23,gke-services=10.2.18.0/23 \
+gcloud compute networks subnets create "$GKE_SUBNET" \
+  --project="$PROJECT_ID" --network="$GCP_VPC" --region="$REGION" \
+  --range="$GKE_NODE_CIDR" \
+  --secondary-range="${GKE_POD_RANGE_NAME}=${GKE_POD_CIDR},${GKE_SVC_RANGE_NAME}=${GKE_SVC_CIDR}" \
   --enable-private-ip-google-access
 
-gcloud compute networks subnets create btn-private-nat-subnet \
-  --project="$PROJECT" --network=btn-gcp-vpc --region="$REGION" \
-  --range=10.2.99.96/29 --purpose=PRIVATE_NAT
+gcloud compute networks subnets create "$PRIVATE_NAT_SUBNET" \
+  --project="$PROJECT_ID" --network="$GCP_VPC" --region="$REGION" \
+  --range="$PRIVATE_NAT_CIDR" --purpose=PRIVATE_NAT
 
-gcloud compute networks subnets create btn-proxy-only-subnet \
-  --project="$PROJECT" --network=btn-gcp-vpc --region="$REGION" \
-  --range=10.2.20.0/23 --purpose=REGIONAL_MANAGED_PROXY --role=ACTIVE
+gcloud compute networks subnets create "$PROXY_ONLY_SUBNET" \
+  --project="$PROJECT_ID" --network="$GCP_VPC" --region="$REGION" \
+  --range="$PROXY_ONLY_CIDR" --purpose=REGIONAL_MANAGED_PROXY --role=ACTIVE
 
-gcloud compute addresses create btn-gke-ilb-vip \
-  --project="$PROJECT" --region="$REGION" --subnet=btn-gke-subnet --addresses=10.2.2.200
+gcloud compute addresses create "$ILB_VIP_NAME" \
+  --project="$PROJECT_ID" --region="$REGION" --subnet="$GKE_SUBNET" --addresses="$ILB_VIP_ADDRESS"
 
-gcloud compute networks create sim-alicloud-vpc \
-  --project="$PROJECT" --subnet-mode=custom --bgp-routing-mode=regional
+gcloud compute networks create "$ALICLOUD_VPC" \
+  --project="$PROJECT_ID" --subnet-mode=custom --bgp-routing-mode=regional
 
-gcloud compute networks subnets create sim-alicloud-subnet \
-  --project="$PROJECT" --network=sim-alicloud-vpc --region="$REGION" \
-  --range=192.168.1.0/24 --enable-private-ip-google-access
+gcloud compute networks subnets create "$ALICLOUD_SUBNET" \
+  --project="$PROJECT_ID" --network="$ALICLOUD_VPC" --region="$REGION" \
+  --range="$ALICLOUD_SUBNET_CIDR" --enable-private-ip-google-access
 ```
 </details>
 
@@ -421,8 +421,9 @@ gcloud compute routers nats rules create 100 \
 #### 6B. Deploy the GKE Echo Workload & Standalone NEG Service (`kubectl`)
 Connect to the cluster and apply [`k8s/echo-deployment.yaml`](./k8s/echo-deployment.yaml) and [`k8s/echo-ilb-service.yaml`](./k8s/echo-ilb-service.yaml):
 ```bash
-gcloud container clusters get-credentials btn-gke-island-cluster \
-  --zone="asia-southeast2-a" --project="gcp-demo-02-307713"
+source ./scripts/00-env.sh
+gcloud container clusters get-credentials "$GKE_CLUSTER" \
+  --zone="$ZONE" --project="$PROJECT_ID"
 
 kubectl apply -f k8s/echo-deployment.yaml
 kubectl apply -f k8s/echo-ilb-service.yaml
@@ -520,8 +521,9 @@ gcloud compute forwarding-rules create btn-gke-ilb-fr \
   3. Confirm that **only** `10.2.2.200/32` and `10.2.99.99/32` are learned from `ASN 65001`—and that `10.2.2.0/24`, `10.2.16.0/23`, and `10.2.18.0/23` are completely absent!
 - **Via CLI:**
   ```bash
-  gcloud compute routers get-status sim-alicloud-router \
-    --project=gcp-demo-02-307713 --region=asia-southeast2 \
+  source ./scripts/00-env.sh
+  gcloud compute routers get-status "$ALICLOUD_ROUTER" \
+    --project="$PROJECT_ID" --region="$REGION" \
     --format="yaml(result.bestRoutesForRouter[].destRange,result.bestRoutesForRouter[].nextHopIp)"
   ```
 
@@ -536,19 +538,20 @@ gcloud compute forwarding-rules create btn-gke-ilb-fr \
      sudo tail -f /var/log/alicloud-http.log
      ```
 2. **Initiate Outbound HTTP Requests from the GKE Pods (`kubectl exec`):**
-   > **Note (Cloud Shell `kubeconfig` Tip):** Always run `gcloud container clusters get-credentials btn-gke-island-cluster` first in Cloud Shell! If your Cloud Shell `~/.kube/config` is still pointing to an older deleted cluster IP, `kubectl` will time out with `Unable to connect to the server: dial tcp <old-ip>:443: i/o timeout` before reaching `btn-gke-island-cluster` (`34.101.129.243`).
+   > **Note (Cloud Shell `kubeconfig` Tip):** Always run `gcloud container clusters get-credentials "$GKE_CLUSTER"` first in Cloud Shell! If your Cloud Shell `~/.kube/config` is still pointing to an older deleted cluster IP, `kubectl` will time out with `Unable to connect to the server: dial tcp <old-ip>:443: i/o timeout` before reaching `btn-gke-island-cluster`.
 
    ```bash
-   gcloud container clusters get-credentials btn-gke-island-cluster \
-     --zone="asia-southeast2-a" --project="gcp-demo-02-307713"
+   source ./scripts/00-env.sh
+   gcloud container clusters get-credentials "$GKE_CLUSTER" \
+     --zone="$ZONE" --project="$PROJECT_ID"
 
-   for POD in $(kubectl get pods -l app=btn-echo-app -o jsonpath='{.items[*].metadata.name}'); do
+   for POD in $(kubectl get pods -l "app=${K8S_APP_NAME}" -o jsonpath='{.items[*].metadata.name}'); do
      POD_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.podIP}')
      NODE_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.hostIP}')
-     echo ">>> Sending HTTP GET from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://192.168.1.10/egress-from-$POD"
+     echo ">>> Sending HTTP GET from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://${ALICLOUD_VM_IP}/egress-from-$POD"
      kubectl exec "$POD" -- python3 -c "
    import urllib.request
-   with urllib.request.urlopen('http://192.168.1.10/egress-from-$POD', timeout=5) as r:
+   with urllib.request.urlopen('http://${ALICLOUD_VM_IP}/egress-from-$POD', timeout=5) as r:
        print('HTTP Status:', r.status)
        print(r.read().decode())
    "

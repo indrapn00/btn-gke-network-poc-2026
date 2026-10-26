@@ -119,34 +119,58 @@ flowchart LR
 
 ---
 
-## 4. Repository Structure
+## 4. Repository Structure & Portable Environment Configuration
+
+All scripts in this repository are **100% portable across any Google Cloud project, region, or IP plan**. They contain **no hardcoded project IDs**—instead, [`scripts/00-env.sh`](./scripts/00-env.sh) automatically detects your active `gcloud config` project, region, and zone (and supports optional overrides via environment variables or a `.env` file copied from [`.env.example`](./.env.example)).
 
 ```text
 btn-gke-network-poc-2026/
-├── README.md                         # Executive summary, architecture, quickstart & verification summary
+├── README.md                         # Executive summary, architecture, quickstart & verification guide
 ├── study-notes.md                    # Complete GUI-first step-by-step configuration guide & deep-dive notes
+├── .env.example                      # Optional template to override Project ID, Region, Zone, or CIDRs
 ├── k8s/
 │   ├── echo-deployment.yaml          # 2-replica GKE HTTP Echo & Egress Test Deployment
 │   └── echo-ilb-service.yaml         # GKE ClusterIP Service with Standalone NEG (btn-echo-neg)
 ├── scripts/
-│   ├── 01-deploy-all.sh              # End-to-end automated provisioning script
-│   ├── 02-verify-all.sh              # End-to-end live verification script (5 test suites)
-│   ├── 03-cleanup-all.sh             # Reverse-dependency cleanup script
-│   └── alicloud-vm-startup.sh        # Startup script for sim-alicloud-vm (192.168.1.10 HTTP inspector)
+│   ├── 00-env.sh                     # Dynamic environment auto-discovery (Project ID, Region, Zone, CIDRs)
+│   ├── 01-deploy-all.sh              # Portable end-to-end automated provisioning script
+│   ├── 02-verify-all.sh              # Portable end-to-end live verification script (5 test suites)
+│   ├── 03-cleanup-all.sh             # Portable reverse-dependency cleanup/deprovisioning script
+│   └── alicloud-vm-startup.sh        # Startup script for sim-alicloud-vm (HTTP source-IP inspector)
 └── logs/
-    └── verification_output.txt       # Captured live verification output from gcp-demo-02-307713
+    └── verification_output.txt       # Captured live verification output from reference test run
+```
+
+### 4.1 One-Command Quickstart for Any Customer / Partner GCP Project
+
+Any customer or partner can deploy, verify, and tear down this entire PoC in their own GCP project with four commands:
+
+```bash
+git clone https://github.com/indrapn00/btn-gke-network-poc-2026.git
+cd btn-gke-network-poc-2026
+
+# 1. Dynamically load your active GCP Project ID, Region, and Zone from `gcloud config`
+#    (Or set `export PROJECT_ID=your-project-id` / copy `.env.example` to `.env` to customize):
+source ./scripts/00-env.sh
+
+# 2. Provision the entire PoC environment (VPCs, HA VPN, BGP, Private NAT, GKE, Internal ALB):
+./scripts/01-deploy-all.sh
+
+# 3. Run all 5 Control Plane + Data Plane verification tests (saves output to logs/verification_output.txt):
+./scripts/02-verify-all.sh
+
+# 4. Deprovision all PoC resources cleanly when finished:
+./scripts/03-cleanup-all.sh
 ```
 
 ---
 
 ## 5. Step-by-Step Control Plane & Data Plane Verification Guide (GUI + CLI)
 
-### 5.1 Automated End-to-End Verification Script
-All resources are deployed and running in project `gcp-demo-02-307713` (`asia-southeast2`). To run the full 5-test verification suite (including live `tcpdump` packet captures, `/var/log/alicloud-http.log`, and `kubectl logs`):
+### 5.1 Load Dynamic Environment Variables First
+Before running any manual CLI verification commands below, load [`scripts/00-env.sh`](./scripts/00-env.sh) so `$PROJECT_ID`, `$REGION`, `$ZONE`, and all resource names/IPs are set for your environment:
 ```bash
-git clone https://github.com/indrapn00/btn-gke-network-poc-2026.git
-cd btn-gke-network-poc-2026
-./scripts/02-verify-all.sh
+source ./scripts/00-env.sh
 ```
 
 ---
@@ -158,8 +182,9 @@ cd btn-gke-network-poc-2026
   3. Confirm that **only** `10.2.2.200/32` (Inbound ILB VIP) and `10.2.99.99/32` (Outbound Private NAT SNAT IP) are learned from `ASN 65001`—and that `10.2.2.0/24` (Nodes), `10.2.16.0/23` (Pods), and `10.2.18.0/23` (Services) are completely absent.
 - **Via CLI:**
   ```bash
-  gcloud compute routers get-status sim-alicloud-router \
-    --project=gcp-demo-02-307713 --region=asia-southeast2 \
+  source ./scripts/00-env.sh
+  gcloud compute routers get-status "$ALICLOUD_ROUTER" \
+    --project="$PROJECT_ID" --region="$REGION" \
     --format="yaml(result.bestRoutesForRouter[].destRange,result.bestRoutesForRouter[].nextHopIp)"
   ```
 - **Live Output:**
@@ -179,7 +204,8 @@ This test proves in the **Data Plane** (at both the network packet layer via `tc
 - **In Google Cloud Console UI:** Go to **Compute Engine $\rightarrow$ VM instances**, find **`sim-alicloud-vm`**, and click **SSH** (opens SSH-in-browser via IAP).
 - **Or via CLI:**
   ```bash
-  gcloud compute ssh sim-alicloud-vm --project=gcp-demo-02-307713 --zone=asia-southeast2-a --tunnel-through-iap
+  source ./scripts/00-env.sh
+  gcloud compute ssh "$ALICLOUD_VM_NAME" --project="$PROJECT_ID" --zone="$ZONE" --tunnel-through-iap
   ```
 - Inside `sim-alicloud-vm`, run `tcpdump` on interface `ens4` (or `tail -f /var/log/alicloud-http.log`) to watch incoming packets in real time:
   ```bash
@@ -188,24 +214,25 @@ This test proves in the **Data Plane** (at both the network packet layer via `tc
 
 #### Step B — Initiate Outbound HTTP Traffic from Inside the GKE Pods (`10.2.17.12` & `10.2.16.8`)
 > [!WARNING]
-> **Cloud Shell `kubeconfig` Tip:** If you run `kubectl` in Google Cloud Shell and see `Unable to connect to the server: dial tcp <old-ip>:443: i/o timeout`, your Cloud Shell `~/.kube/config` is still pointing to an older, deleted GKE cluster! Always run `gcloud container clusters get-credentials btn-gke-island-cluster --zone=asia-southeast2-a --project=gcp-demo-02-307713` first to point `kubectl` to `btn-gke-island-cluster` (`34.101.129.243`).
+> **Cloud Shell `kubeconfig` Tip:** If you run `kubectl` in Google Cloud Shell and see `Unable to connect to the server: dial tcp <old-ip>:443: i/o timeout`, your Cloud Shell `~/.kube/config` is still pointing to an older, deleted GKE cluster! Always run `gcloud container clusters get-credentials "$GKE_CLUSTER" --zone="$ZONE" --project="$PROJECT_ID"` first.
 
 - From Cloud Shell or your workstation terminal, execute an outbound HTTP GET request from each GKE Pod to the Simulated Alibaba Cloud VM (`http://192.168.1.10/`):
   ```bash
-  gcloud container clusters get-credentials btn-gke-island-cluster \
-    --zone=asia-southeast2-a --project=gcp-demo-02-307713
+  source ./scripts/00-env.sh
+  gcloud container clusters get-credentials "$GKE_CLUSTER" \
+    --zone="$ZONE" --project="$PROJECT_ID"
 
   # 1. Inspect the GKE Pods and their hidden Island-Mode IPs (10.2.17.12 and 10.2.16.8):
-  kubectl get pods -l app=btn-echo-app -o wide
+  kubectl get pods -l "app=${K8S_APP_NAME}" -o wide
 
   # 2. Execute HTTP requests from inside each GKE Pod to Simulated Alibaba Cloud VM (192.168.1.10):
-  for POD in $(kubectl get pods -l app=btn-echo-app -o jsonpath='{.items[*].metadata.name}'); do
+  for POD in $(kubectl get pods -l "app=${K8S_APP_NAME}" -o jsonpath='{.items[*].metadata.name}'); do
     POD_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.podIP}')
     NODE_IP=$(kubectl get pod "$POD" -o jsonpath='{.status.hostIP}')
-    echo ">>> Sending HTTP GET from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://192.168.1.10/egress-from-$POD"
+    echo ">>> Sending HTTP GET from GKE Pod $POD (Pod IP: $POD_IP, Node IP: $NODE_IP) -> http://${ALICLOUD_VM_IP}/egress-from-$POD"
     kubectl exec "$POD" -- python3 -c "
   import urllib.request
-  with urllib.request.urlopen('http://192.168.1.10/egress-from-$POD', timeout=5) as r:
+  with urllib.request.urlopen('http://${ALICLOUD_VM_IP}/egress-from-$POD', timeout=5) as r:
       print('HTTP Status:', r.status)
       print(r.read().decode())
   "
@@ -268,12 +295,13 @@ This test proves in the **Data Plane** that the Simulated Alibaba Cloud VM (`192
 #### Step B — Send Inbound HTTP Requests from `sim-alicloud-vm` (`192.168.1.10`) to `http://10.2.2.200/`
 - Inside the SSH session on **`sim-alicloud-vm`** (or via `gcloud compute ssh`), run:
   ```bash
-  gcloud compute ssh sim-alicloud-vm \
-    --project=gcp-demo-02-307713 --zone=asia-southeast2-a --tunnel-through-iap \
+  source ./scripts/00-env.sh
+  gcloud compute ssh "$ALICLOUD_VM_NAME" \
+    --project="$PROJECT_ID" --zone="$ZONE" --tunnel-through-iap \
     --command="
-  curl -i -s http://10.2.2.200/ingress-from-alicloud-1
+  curl -i -s http://${ILB_VIP_ADDRESS}/ingress-from-alicloud-1
   echo ''
-  curl -i -s http://10.2.2.200/ingress-from-alicloud-2
+  curl -i -s http://${ILB_VIP_ADDRESS}/ingress-from-alicloud-2
   "
   ```
 
@@ -335,13 +363,17 @@ This test proves in the **Data Plane** that the Simulated Alibaba Cloud VM (`192
 
 From inside `sim-alicloud-vm` (`192.168.1.10`), attempt to connect directly to a GKE Pod IP (`10.2.17.12:8080` or `10.2.16.8:8080`) or GKE Node IP (`10.2.2.4:80` or `10.2.2.3:80`) bypassing the `/32` ILB VIP:
 ```bash
-gcloud compute ssh sim-alicloud-vm \
-  --project=gcp-demo-02-307713 --zone=asia-southeast2-a --tunnel-through-iap \
+source ./scripts/00-env.sh
+SamplePodIP=$(kubectl get pods -l "app=${K8S_APP_NAME}" -o jsonpath='{.items[0].status.podIP}')
+SampleNodeIP=$(kubectl get pods -l "app=${K8S_APP_NAME}" -o jsonpath='{.items[0].status.hostIP}')
+
+gcloud compute ssh "$ALICLOUD_VM_NAME" \
+  --project="$PROJECT_ID" --zone="$ZONE" --tunnel-through-iap \
   --command="
-echo '1. Testing direct HTTP to GKE Pod IP (10.2.17.12:8080) [Expect Timeout]:'
-curl -v -m 3 http://10.2.17.12:8080/ || echo 'PASS: Direct Pod IP 10.2.17.12 is unroutable from Alibaba Cloud (Island-Mode Enforced)'
-echo '2. Testing direct HTTP to GKE Node IP (10.2.2.4:80) [Expect Timeout]:'
-curl -v -m 3 http://10.2.2.4:80/ || echo 'PASS: Direct Node IP 10.2.2.4 is unroutable from Alibaba Cloud (Island-Mode Enforced)'
+echo '1. Testing direct HTTP to GKE Pod IP ($SamplePodIP:8080) [Expect Timeout]:'
+curl -v -m 3 http://$SamplePodIP:8080/ || echo 'PASS: Direct Pod IP $SamplePodIP is unroutable from Alibaba Cloud (Island-Mode Enforced)'
+echo '2. Testing direct HTTP to GKE Node IP ($SampleNodeIP:80) [Expect Timeout]:'
+curl -v -m 3 http://$SampleNodeIP:80/ || echo 'PASS: Direct Node IP $SampleNodeIP is unroutable from Alibaba Cloud (Island-Mode Enforced)'
 "
 ```
 **Observed Output:**

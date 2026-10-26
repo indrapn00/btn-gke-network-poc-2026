@@ -8,6 +8,19 @@ import threading
 
 LOG_FILE = "/var/log/alicloud-http.log"
 
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+SERVER_IP = get_local_ip()
+
 def make_handler(port):
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -18,7 +31,7 @@ def make_handler(port):
                 "observed_client_ip": self.client_address[0],
                 "observed_client_port": self.client_address[1],
                 "server_hostname": socket.gethostname(),
-                "server_ip": "192.168.1.10",
+                "server_ip": SERVER_IP,
                 "server_port": port,
                 "request_path": self.path,
                 "headers": dict(self.headers)
